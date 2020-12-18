@@ -1,0 +1,368 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <script src="jquery.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100vh;
+      overflow-x: hidden;
+      overscroll-behavior: none;
+    }
+
+    .loading-element {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      height: 4px;
+      width: 128px;
+      transform: translate(-50%, -50%);
+      user-select: none;
+      pointer-events: none;
+      animation: loading-element-enter .2s ease .5s;
+      animation-fill-mode: backwards;
+      background-color: #eee;
+    }
+
+    .loading-progress {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 100%;
+      transform-origin: 0% 50%;
+      background-color: #aaa;
+      transition: transform .2s ease-in-out;
+    }
+
+    @keyframes loading-element-enter {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    body.is-loading .loading-element {
+      display: block;
+    }
+
+    body.is-loading .prototype-container {
+      display: none;
+    }
+
+    .prototype-container {
+      position: fixed;
+      height: 100%;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      overscroll-behavior: auto;
+    }
+
+    .prototype-container ::-webkit-scrollbar {
+      display: none;
+    }
+
+    .artboard {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, .12);
+      overflow: hidden;
+    }
+
+    .artboard.is-active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: all;
+    }
+
+    .artboard-scroll-container,
+    .artboard-fixed-container {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+    }
+
+    .artboard-fixed-container {
+      pointer-events: none;
+    }
+
+    .artboard-scroll-container {
+      overflow: scroll;
+    }
+
+    .artboard-content {
+      position: absolute;
+      left: 0;
+      top: 0;
+      background-size: contain;
+      overflow: hidden; /* don't allow hotspots to create scrolling */
+    }
+
+    .hotspot {
+      cursor: pointer;
+      position: absolute;
+      opacity: 0;
+    }
+
+    body[can-show-hotspots] {
+      /* this helps hotspots work on iOS */
+      cursor: pointer;
+    }
+
+    body[can-show-hotspots] .hotspot {
+      background-color: rgba(239, 108, 0, .2);
+      box-shadow:
+          0 0 0 3px rgba(239, 108, 0, .5) inset,
+          0 4px 8px rgba(239, 108, 0, .25);
+    }
+
+    .highlight-hotspots .hotspot {
+      animation: hotspotAnimation .6s ease;
+    }
+
+    @keyframes hotspotAnimation {
+      0% {
+        opacity: 0;
+      }
+      50% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0;
+      }
+    }
+  </style>
+</head>
+<body class="is-loading"
+    can-show-hotspots>
+
+  <div class="loading-element">
+      <div class="loading-progress"></div>
+  </div>
+  <div class="prototype-container"></div>
+
+  <script>
+    const env = {
+      isIpad: navigator.userAgent.match(/iPad/),
+      isIphone: navigator.userAgent.match(/iPhone/),
+    };
+
+    class Proto {
+      constructor(prototypeData) {
+        this.prototypeData = prototypeData;
+        this.buildUi();
+      }
+
+      preloadImages() {
+        let $loadingProgress = $('.loading-progress');
+        let numLoaded = 0;
+        let numTotal = 0;
+
+        function updateProgress_() {
+          let scale = numTotal ? numLoaded / numTotal : 0;
+          $loadingProgress.css('transform', `scaleX(${scale})`);
+        }
+
+        updateProgress_();
+
+        function preloadImageUrl_(url) {
+          return new Promise((resolve, reject) => {
+            let img = document.createElement('img');
+            img.src = url;
+            img.onload = () => {
+              ++numLoaded;
+              updateProgress_();
+              resolve();
+            };
+            img.onerror = () => {
+              ++numLoaded;
+              updateProgress_();
+              console.error(`Error loading ${url}`); resolve();
+            };
+          });
+        }
+
+        let visitedArtboards = [];
+        let imageUrls = new Set([]);
+
+        let promises = [];
+        Object.keys(this.prototypeData.artboards).forEach(id => {
+          promises.push(preloadImageUrl_(`${id}.png`));
+          if (this.prototypeData.artboards[id].hasFixedLayers) {
+            promises.push(preloadImageUrl_(`${id}_fixed.png`));
+          }
+        });
+
+        numTotal = promises.length;
+        return Promise.all(promises);
+      }
+
+      buildUi() {
+        this.buildArtboards();
+
+        this.preloadImages().then(() => $('body').removeClass('is-loading'));
+
+        if (this.prototypeData.title) {
+          document.title = this.prototypeData.title;
+        }
+
+        $(window).on('hashchange', () => {
+          this.setArtboardVisible(this.getUrlInfo().artboardId);
+        });
+
+        $(document).click(() => {
+          $(document.body).removeClass('highlight-hotspots');
+          let f = document.body.offsetWidth;
+          $(document.body).addClass('highlight-hotspots');
+        });
+
+        $(window).on('resize', () => this.resize());
+
+        this.setArtboardVisible(this.getUrlInfo().artboardId);
+      }
+
+      resize() {
+        let deviceWidth = window.innerWidth;
+        let deviceHeight = window.innerHeight;
+
+        if (window.navigator.standalone && (env.isIpad || env.isIphone)) {
+          deviceWidth = screen.width;
+          deviceHeight = screen.height;
+        }
+
+        let width = this.startArtboard.viewportWidth || this.startArtboard.width;
+        let height = this.startArtboard.viewportHeight || this.startArtboard.height;
+        if (this.currentArtboard.viewportWidth && this.currentArtboard.viewportHeight) {
+          width = this.currentArtboard.viewportWidth;
+          height = this.currentArtboard.viewportHeight;
+        }
+
+        let xScale = deviceHeight / height;
+        let yScale = deviceWidth / width;
+        $('.prototype-container')
+            .css({
+              width: width,
+              height: height,
+              zoom: Math.min(1, Math.min(xScale, yScale)),
+            });
+      }
+
+      getUrlInfo() {
+        let hash = window.location.hash;
+
+        return {
+          artboardId: hash ? hash.substring(1) : this.prototypeData.flowStartArtboardId,
+        };
+      }
+
+      buildArtboards() {
+        Object.keys(this.prototypeData.artboards).forEach(id => {
+          let artboardData = this.prototypeData.artboards[id];
+          let $artboard = $('<div>')
+              .addClass('artboard')
+              .attr('data-artboard-id', id)
+              .appendTo('.prototype-container');
+
+          // add scrollable content
+          let $artboardScrollContainer = $('<div>')
+              .addClass('artboard-scroll-container')
+              .appendTo($artboard);
+          let $artboardScrollableContent = $('<div>')
+              .addClass('artboard-content')
+              .css({
+                backgroundImage: `url(${id}.png)`,
+                width: artboardData.width,
+                height: artboardData.height,
+              })
+              .appendTo($artboardScrollContainer);
+
+          // add fixed content
+          if (artboardData.hasFixedLayers) {
+            let $artboardFixedContainer = $('<div>')
+                .addClass('artboard-fixed-container')
+                .appendTo($artboard);
+            let $artboardFixedContent = $('<div>')
+                .addClass('artboard-content')
+                .css({
+                  backgroundImage: `url(${id}_fixed.png)`,
+                  width: artboardData.width,
+                  height: artboardData.height,
+                })
+                .appendTo($artboardFixedContainer);
+          }
+
+          if (id == this.prototypeData.flowStartArtboardId) {
+            // this is the start artboard
+            this.startArtboard = artboardData;
+            this.currentArtboard = artboardData;
+          }
+
+          artboardData.hotspots.forEach(hotspotData => {
+            let $hotspot = $('<div>')
+              .addClass('hotspot')
+              .attr('data-artboard-id', id)
+              .css({
+                left: hotspotData.rectangle.x,
+                top: hotspotData.rectangle.y,
+                width: hotspotData.rectangle.width,
+                height: hotspotData.rectangle.height,
+              })
+              .appendTo(hotspotData.isFixed
+                  ? $artboard // don't add to $artboardFixedContent because of pointer-events:none
+                  : $artboardScrollableContent);
+            $hotspot.click(event => {
+              this.gotoTarget(hotspotData.target)
+              event.stopPropagation();
+            });
+          });
+        });
+      }
+
+      gotoTarget(target) {
+        if (target == 'back') {
+          history.back();
+          return;
+        }
+
+        this.gotoArtboard(target);
+      }
+
+      gotoArtboard(artboardId) {
+        window.location.href= '#' + artboardId;
+      }
+
+      setArtboardVisible(artboardId) {
+        this.currentArtboard = this.prototypeData.artboards[artboardId];
+
+        $('.artboard-scroll-container').scrollLeft(0).scrollTop(0);
+
+        $(document.body).removeClass('highlight-hotspots');
+        $('.artboard').removeClass('is-active');
+        $(`.artboard[data-artboard-id="${artboardId}"]`).addClass('is-active');
+
+        this.resize();
+      }
+    }
+
+  </script>
+  <script>
+    new Proto(
+      {"title":"Rider View Master ","flowStartArtboardId":"52985F5A-43BC-447C-AD91-91E09E20BCFB","artboards":{"52985F5A-43BC-447C-AD91-91E09E20BCFB":{"title":"Destination","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":7,"y":188,"width":375,"height":130},"target":"4D63D724-3E6D-465B-8EB0-84FA218C069A","isFixed":0},{"rectangle":{"x":19,"y":642,"width":346,"height":50},"target":"4D63D724-3E6D-465B-8EB0-84FA218C069A","isFixed":0},{"rectangle":{"x":19,"y":535,"width":150,"height":49},"target":"4D63D724-3E6D-465B-8EB0-84FA218C069A","isFixed":0}],"hasFixedLayers":false},"4D63D724-3E6D-465B-8EB0-84FA218C069A":{"title":"Suggestion","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0,"y":74,"width":390,"height":348},"target":"E315CE29-605D-433F-9841-1F4504893D3B","isFixed":0}],"hasFixedLayers":false},"E315CE29-605D-433F-9841-1F4504893D3B":{"title":"Preview/confirm","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0,"y":707,"width":390,"height":53},"target":"3B7D79A8-9BFC-41A8-902B-82416175B5F6","isFixed":0}],"hasFixedLayers":false},"3B7D79A8-9BFC-41A8-902B-82416175B5F6":{"title":"Comfirm pickup ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":6,"y":707,"width":384,"height":53},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0}],"hasFixedLayers":false},"64147C99-8CE3-4B0F-AE8A-B54237198D6C":{"title":"Ride Service/Main","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0,"y":46,"width":75,"height":44},"target":"3B7D79A8-9BFC-41A8-902B-82416175B5F6","isFixed":0},{"rectangle":{"x":65,"y":606,"width":260,"height":61},"target":"BCD43B33-35BC-4DC4-A92D-47C3B6758BBB","isFixed":0},{"rectangle":{"x":65,"y":678,"width":260,"height":60},"target":"E2522980-E89B-4A16-91B3-D2A9CB1FE078","isFixed":0},{"rectangle":{"x":14,"y":110,"width":360,"height":452},"target":"5BA12019-71C1-4E8A-821A-9DBECEF659FE","isFixed":0},{"rectangle":{"x":14,"y":760,"width":72,"height":60},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"BCD43B33-35BC-4DC4-A92D-47C3B6758BBB":{"title":"Pop up/ Slow Down","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":65,"y":684,"width":260,"height":60},"target":"E2522980-E89B-4A16-91B3-D2A9CB1FE078","isFixed":0},{"rectangle":{"x":1,"y":46,"width":79,"height":38},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":42,"y":444,"width":153,"height":45},"target":"5BA12019-71C1-4E8A-821A-9DBECEF659FE","isFixed":0},{"rectangle":{"x":205,"y":444,"width":155,"height":45},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":20,"y":760,"width":68,"height":60},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"E2522980-E89B-4A16-91B3-D2A9CB1FE078":{"title":"Pop up/ Pull Over","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":65,"y":606,"width":260,"height":61},"target":"BCD43B33-35BC-4DC4-A92D-47C3B6758BBB","isFixed":0},{"rectangle":{"x":0,"y":46,"width":86,"height":38},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":196,"y":444,"width":164,"height":45},"target":"B6AAD840-50E1-465F-B1A1-F3B6E5083505","isFixed":0},{"rectangle":{"x":41,"y":444,"width":155,"height":45},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":13,"y":760,"width":73,"height":60},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"5BA12019-71C1-4E8A-821A-9DBECEF659FE":{"title":"Pop up/Restaurant ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":66,"y":610,"width":260,"height":57},"target":"BCD43B33-35BC-4DC4-A92D-47C3B6758BBB","isFixed":0},{"rectangle":{"x":66,"y":684,"width":260,"height":60},"target":"E2522980-E89B-4A16-91B3-D2A9CB1FE078","isFixed":0},{"rectangle":{"x":40,"y":443,"width":319,"height":44},"target":"83E16BA7-0DDC-4BB7-94BC-A724EA768188","isFixed":0},{"rectangle":{"x":0,"y":46,"width":80,"height":39},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":8,"y":758,"width":84,"height":62},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"B6AAD840-50E1-465F-B1A1-F3B6E5083505":{"title":"PaymentScreen","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":20.900002,"y":641,"width":343,"height":50},"target":"E5465F6A-5D3E-4313-B7E0-449F4BE8487F","isFixed":0},{"rectangle":{"x":20.899994,"y":705,"width":343,"height":50},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0},{"rectangle":{"x":24.88,"y":759.9999,"width":48,"height":49},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"83E16BA7-0DDC-4BB7-94BC-A724EA768188":{"title":"Pop up/Music ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":42,"y":443,"width":318,"height":46},"target":"C9BE8BDB-4238-477C-8647-9FF246D573C7","isFixed":0},{"rectangle":{"x":65,"y":609,"width":260,"height":61},"target":"BCD43B33-35BC-4DC4-A92D-47C3B6758BBB","isFixed":0},{"rectangle":{"x":65,"y":684,"width":260,"height":57},"target":"E2522980-E89B-4A16-91B3-D2A9CB1FE078","isFixed":0},{"rectangle":{"x":2,"y":46,"width":81,"height":38},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":20,"y":758,"width":63,"height":62},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"E5465F6A-5D3E-4313-B7E0-449F4BE8487F":{"title":"Positive Emotions Ratings ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":24.88,"y":760,"width":48,"height":49},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0},{"rectangle":{"x":23.733337,"y":674.99994,"width":343,"height":50},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0},{"rectangle":{"x":24,"y":649,"width":351,"height":92},"target":"AB15CB32-15C3-4114-8EE9-151751B87F27","isFixed":0}],"hasFixedLayers":false},"C9BE8BDB-4238-477C-8647-9FF246D573C7":{"title":"Pop up/Temperature ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":42,"y":443,"width":317,"height":46},"target":"B6AAD840-50E1-465F-B1A1-F3B6E5083505","isFixed":0},{"rectangle":{"x":65,"y":607,"width":260,"height":60},"target":"BCD43B33-35BC-4DC4-A92D-47C3B6758BBB","isFixed":0},{"rectangle":{"x":65,"y":681,"width":260,"height":60},"target":"E2522980-E89B-4A16-91B3-D2A9CB1FE078","isFixed":0},{"rectangle":{"x":1,"y":46,"width":88,"height":39},"target":"64147C99-8CE3-4B0F-AE8A-B54237198D6C","isFixed":0},{"rectangle":{"x":17,"y":760,"width":65,"height":60},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"AB15CB32-15C3-4114-8EE9-151751B87F27":{"title":"Negative Payment Screen","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":23.699993,"y":584.4,"width":343,"height":50},"target":"9F387179-74B2-4188-82B1-5F8846CB56DA","isFixed":0},{"rectangle":{"x":24.88,"y":759.9999,"width":48,"height":49},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"9F387179-74B2-4188-82B1-5F8846CB56DA":{"title":"Get Coupon","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":24.88,"y":759.9999,"width":48,"height":49},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0},{"rectangle":{"x":48,"y":354,"width":270,"height":140},"target":"16135F6F-6013-4616-B0CB-FD11199A861A","isFixed":0},{"rectangle":{"x":47,"y":354,"width":271,"height":140},"target":"16135F6F-6013-4616-B0CB-FD11199A861A","isFixed":0}],"hasFixedLayers":false},"16135F6F-6013-4616-B0CB-FD11199A861A":{"title":"After Coupon Redeemed ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":24.399994,"y":522.19995,"width":343,"height":50},"target":"30490448-95FC-4EE4-BD36-1066E6868420","isFixed":0},{"rectangle":{"x":24.88,"y":759.9999,"width":48,"height":49},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0},{"rectangle":{"x":21.799988,"y":609.3999,"width":343,"height":50},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false},"30490448-95FC-4EE4-BD36-1066E6868420":{"title":"Ratings for Negative Emotions ","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":24.88,"y":760,"width":48,"height":49},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0},{"rectangle":{"x":22.733337,"y":661,"width":343,"height":50},"target":"52985F5A-43BC-447C-AD91-91E09E20BCFB","isFixed":0}],"hasFixedLayers":false}}}
+    );
+  </script>
+
+</body>
+</html>
