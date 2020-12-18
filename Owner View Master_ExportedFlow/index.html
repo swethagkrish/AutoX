@@ -1,0 +1,368 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <script src="jquery.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100vh;
+      overflow-x: hidden;
+      overscroll-behavior: none;
+    }
+
+    .loading-element {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      height: 4px;
+      width: 128px;
+      transform: translate(-50%, -50%);
+      user-select: none;
+      pointer-events: none;
+      animation: loading-element-enter .2s ease .5s;
+      animation-fill-mode: backwards;
+      background-color: #eee;
+    }
+
+    .loading-progress {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 100%;
+      transform-origin: 0% 50%;
+      background-color: #aaa;
+      transition: transform .2s ease-in-out;
+    }
+
+    @keyframes loading-element-enter {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    body.is-loading .loading-element {
+      display: block;
+    }
+
+    body.is-loading .prototype-container {
+      display: none;
+    }
+
+    .prototype-container {
+      position: fixed;
+      height: 100%;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      overscroll-behavior: auto;
+    }
+
+    .prototype-container ::-webkit-scrollbar {
+      display: none;
+    }
+
+    .artboard {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, .12);
+      overflow: hidden;
+    }
+
+    .artboard.is-active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: all;
+    }
+
+    .artboard-scroll-container,
+    .artboard-fixed-container {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+    }
+
+    .artboard-fixed-container {
+      pointer-events: none;
+    }
+
+    .artboard-scroll-container {
+      overflow: scroll;
+    }
+
+    .artboard-content {
+      position: absolute;
+      left: 0;
+      top: 0;
+      background-size: contain;
+      overflow: hidden; /* don't allow hotspots to create scrolling */
+    }
+
+    .hotspot {
+      cursor: pointer;
+      position: absolute;
+      opacity: 0;
+    }
+
+    body[can-show-hotspots] {
+      /* this helps hotspots work on iOS */
+      cursor: pointer;
+    }
+
+    body[can-show-hotspots] .hotspot {
+      background-color: rgba(239, 108, 0, .2);
+      box-shadow:
+          0 0 0 3px rgba(239, 108, 0, .5) inset,
+          0 4px 8px rgba(239, 108, 0, .25);
+    }
+
+    .highlight-hotspots .hotspot {
+      animation: hotspotAnimation .6s ease;
+    }
+
+    @keyframes hotspotAnimation {
+      0% {
+        opacity: 0;
+      }
+      50% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0;
+      }
+    }
+  </style>
+</head>
+<body class="is-loading"
+    can-show-hotspots>
+
+  <div class="loading-element">
+      <div class="loading-progress"></div>
+  </div>
+  <div class="prototype-container"></div>
+
+  <script>
+    const env = {
+      isIpad: navigator.userAgent.match(/iPad/),
+      isIphone: navigator.userAgent.match(/iPhone/),
+    };
+
+    class Proto {
+      constructor(prototypeData) {
+        this.prototypeData = prototypeData;
+        this.buildUi();
+      }
+
+      preloadImages() {
+        let $loadingProgress = $('.loading-progress');
+        let numLoaded = 0;
+        let numTotal = 0;
+
+        function updateProgress_() {
+          let scale = numTotal ? numLoaded / numTotal : 0;
+          $loadingProgress.css('transform', `scaleX(${scale})`);
+        }
+
+        updateProgress_();
+
+        function preloadImageUrl_(url) {
+          return new Promise((resolve, reject) => {
+            let img = document.createElement('img');
+            img.src = url;
+            img.onload = () => {
+              ++numLoaded;
+              updateProgress_();
+              resolve();
+            };
+            img.onerror = () => {
+              ++numLoaded;
+              updateProgress_();
+              console.error(`Error loading ${url}`); resolve();
+            };
+          });
+        }
+
+        let visitedArtboards = [];
+        let imageUrls = new Set([]);
+
+        let promises = [];
+        Object.keys(this.prototypeData.artboards).forEach(id => {
+          promises.push(preloadImageUrl_(`${id}.png`));
+          if (this.prototypeData.artboards[id].hasFixedLayers) {
+            promises.push(preloadImageUrl_(`${id}_fixed.png`));
+          }
+        });
+
+        numTotal = promises.length;
+        return Promise.all(promises);
+      }
+
+      buildUi() {
+        this.buildArtboards();
+
+        this.preloadImages().then(() => $('body').removeClass('is-loading'));
+
+        if (this.prototypeData.title) {
+          document.title = this.prototypeData.title;
+        }
+
+        $(window).on('hashchange', () => {
+          this.setArtboardVisible(this.getUrlInfo().artboardId);
+        });
+
+        $(document).click(() => {
+          $(document.body).removeClass('highlight-hotspots');
+          let f = document.body.offsetWidth;
+          $(document.body).addClass('highlight-hotspots');
+        });
+
+        $(window).on('resize', () => this.resize());
+
+        this.setArtboardVisible(this.getUrlInfo().artboardId);
+      }
+
+      resize() {
+        let deviceWidth = window.innerWidth;
+        let deviceHeight = window.innerHeight;
+
+        if (window.navigator.standalone && (env.isIpad || env.isIphone)) {
+          deviceWidth = screen.width;
+          deviceHeight = screen.height;
+        }
+
+        let width = this.startArtboard.viewportWidth || this.startArtboard.width;
+        let height = this.startArtboard.viewportHeight || this.startArtboard.height;
+        if (this.currentArtboard.viewportWidth && this.currentArtboard.viewportHeight) {
+          width = this.currentArtboard.viewportWidth;
+          height = this.currentArtboard.viewportHeight;
+        }
+
+        let xScale = deviceHeight / height;
+        let yScale = deviceWidth / width;
+        $('.prototype-container')
+            .css({
+              width: width,
+              height: height,
+              zoom: Math.min(1, Math.min(xScale, yScale)),
+            });
+      }
+
+      getUrlInfo() {
+        let hash = window.location.hash;
+
+        return {
+          artboardId: hash ? hash.substring(1) : this.prototypeData.flowStartArtboardId,
+        };
+      }
+
+      buildArtboards() {
+        Object.keys(this.prototypeData.artboards).forEach(id => {
+          let artboardData = this.prototypeData.artboards[id];
+          let $artboard = $('<div>')
+              .addClass('artboard')
+              .attr('data-artboard-id', id)
+              .appendTo('.prototype-container');
+
+          // add scrollable content
+          let $artboardScrollContainer = $('<div>')
+              .addClass('artboard-scroll-container')
+              .appendTo($artboard);
+          let $artboardScrollableContent = $('<div>')
+              .addClass('artboard-content')
+              .css({
+                backgroundImage: `url(${id}.png)`,
+                width: artboardData.width,
+                height: artboardData.height,
+              })
+              .appendTo($artboardScrollContainer);
+
+          // add fixed content
+          if (artboardData.hasFixedLayers) {
+            let $artboardFixedContainer = $('<div>')
+                .addClass('artboard-fixed-container')
+                .appendTo($artboard);
+            let $artboardFixedContent = $('<div>')
+                .addClass('artboard-content')
+                .css({
+                  backgroundImage: `url(${id}_fixed.png)`,
+                  width: artboardData.width,
+                  height: artboardData.height,
+                })
+                .appendTo($artboardFixedContainer);
+          }
+
+          if (id == this.prototypeData.flowStartArtboardId) {
+            // this is the start artboard
+            this.startArtboard = artboardData;
+            this.currentArtboard = artboardData;
+          }
+
+          artboardData.hotspots.forEach(hotspotData => {
+            let $hotspot = $('<div>')
+              .addClass('hotspot')
+              .attr('data-artboard-id', id)
+              .css({
+                left: hotspotData.rectangle.x,
+                top: hotspotData.rectangle.y,
+                width: hotspotData.rectangle.width,
+                height: hotspotData.rectangle.height,
+              })
+              .appendTo(hotspotData.isFixed
+                  ? $artboard // don't add to $artboardFixedContent because of pointer-events:none
+                  : $artboardScrollableContent);
+            $hotspot.click(event => {
+              this.gotoTarget(hotspotData.target)
+              event.stopPropagation();
+            });
+          });
+        });
+      }
+
+      gotoTarget(target) {
+        if (target == 'back') {
+          history.back();
+          return;
+        }
+
+        this.gotoArtboard(target);
+      }
+
+      gotoArtboard(artboardId) {
+        window.location.href= '#' + artboardId;
+      }
+
+      setArtboardVisible(artboardId) {
+        this.currentArtboard = this.prototypeData.artboards[artboardId];
+
+        $('.artboard-scroll-container').scrollLeft(0).scrollTop(0);
+
+        $(document.body).removeClass('highlight-hotspots');
+        $('.artboard').removeClass('is-active');
+        $(`.artboard[data-artboard-id="${artboardId}"]`).addClass('is-active');
+
+        this.resize();
+      }
+    }
+
+  </script>
+  <script>
+    new Proto(
+      {"title":"Owner View Master","flowStartArtboardId":"3F79102E-6A62-4735-B11D-6A02D691B05B","artboards":{"3F79102E-6A62-4735-B11D-6A02D691B05B":{"title":"Homepage-In Service","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.547,"y":539.7967,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":98,"y":693,"width":195,"height":52},"target":"B6F2E88D-E9E1-42EA-879F-159F8D2C53F6","isFixed":0}],"hasFixedLayers":false},"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38":{"title":"Settings","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":0.046875,"y":289.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":334.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":379.60004,"width":390,"height":45},"target":"78EC4C62-382A-4C98-9557-DCCF0810675B","isFixed":0},{"rectangle":{"x":0.046875,"y":424.60004,"width":390,"height":45},"target":"FB4924D5-A3EA-44DD-BFC2-5E717C1A5391","isFixed":0},{"rectangle":{"x":322,"y":543,"width":57,"height":38},"target":"6C4CAABF-72C1-46F3-A32E-BD51FAFF4C57","isFixed":0},{"rectangle":{"x":322,"y":588,"width":57,"height":38},"target":"8711F76E-75A0-4675-927D-C27DA78C1C92","isFixed":0}],"hasFixedLayers":false},"774536F7-DAA5-4C2C-8731-4C389EE14B0A":{"title":"Information View","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":171.51999999999998,"y":760,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":760,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":338,"y":50,"width":50,"height":44},"target":"3FC1AA99-BCB8-43D3-9D99-CC23360FB403","isFixed":0}],"hasFixedLayers":false},"C1285D6D-7452-4D05-AA0B-A0513BDA93C0":{"title":"Schedule View Monday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":331.1948717948718,"y":193,"width":51.26153846153841,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":275.9128205128205,"y":193,"width":51.261538461538436,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":224.65128205128204,"y":193,"width":51.261538461538464,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":169.36923076923074,"y":193,"width":51.261538461538464,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.1076923076923,"y":193,"width":51.26153846153842,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":63.83076923076922,"y":193,"width":54.27692307692308,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":9.553846153846157,"y":193,"width":54.27692307692307,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":302.18933333333337,"y":760.0000000000001,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.52266666666665,"y":760.0000000000001,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":39.81066666666667,"y":760.0000000000001,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":22.117948717948707,"y":280,"width":344.7589743589744,"height":72.99999999999997},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0},{"rectangle":{"x":319.63589743589745,"y":249,"width":57.2923076923077,"height":30.999999999999993},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0}],"hasFixedLayers":false},"B6F2E88D-E9E1-42EA-879F-159F8D2C53F6":{"title":"Return Home","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.50000293000005,"y":539.7967,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":195,"y":460,"width":135,"height":46},"target":"B9EAAA9C-5470-4ED0-9BAD-3E3A071EAF69","isFixed":0},{"rectangle":{"x":60,"y":460,"width":135,"height":46},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":224,"y":338,"width":106,"height":45},"target":"2CD82BB2-3F0F-4DE7-A93D-4F0A6013C1D0","isFixed":0}],"hasFixedLayers":false},"23112DC1-1746-44B1-B051-A75BC118B857":{"title":"Update User Information","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":96.19995,"y":687.4,"width":196,"height":53},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0}],"hasFixedLayers":false},"78EC4C62-382A-4C98-9557-DCCF0810675B":{"title":"Update Primary Parking Info","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":96.15283,"y":687.59973,"width":196,"height":53},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0}],"hasFixedLayers":false},"FB4924D5-A3EA-44DD-BFC2-5E717C1A5391":{"title":"Update Payment Info","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":97.69983,"y":686.79987,"width":196,"height":53},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0}],"hasFixedLayers":false},"6C4CAABF-72C1-46F3-A32E-BD51FAFF4C57":{"title":"Confirm Take Car Anytime","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":0.046875,"y":289.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":334.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":379.60004,"width":390,"height":45},"target":"78EC4C62-382A-4C98-9557-DCCF0810675B","isFixed":0},{"rectangle":{"x":0.046875,"y":424.60004,"width":390,"height":45},"target":"FB4924D5-A3EA-44DD-BFC2-5E717C1A5391","isFixed":0},{"rectangle":{"x":322,"y":543,"width":57,"height":38},"target":"6C4CAABF-72C1-46F3-A32E-BD51FAFF4C57","isFixed":0},{"rectangle":{"x":322,"y":588,"width":57,"height":38},"target":"8711F76E-75A0-4675-927D-C27DA78C1C92","isFixed":0},{"rectangle":{"x":195,"y":449,"width":135,"height":43},"target":"EE1B348B-B091-4B2E-A2C4-3A15A9E2928B","isFixed":0},{"rectangle":{"x":60,"y":449,"width":135,"height":43},"target":"FCDFEE1F-E979-4F9F-8A97-14852C0E8BB0","isFixed":0}],"hasFixedLayers":false},"8711F76E-75A0-4675-927D-C27DA78C1C92":{"title":"Settings Take Car Confirmed Copy","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":0.046875,"y":289.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":334.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":379.60004,"width":390,"height":45},"target":"78EC4C62-382A-4C98-9557-DCCF0810675B","isFixed":0},{"rectangle":{"x":0.046875,"y":424.60004,"width":390,"height":45},"target":"FB4924D5-A3EA-44DD-BFC2-5E717C1A5391","isFixed":0},{"rectangle":{"x":322,"y":543,"width":57,"height":38},"target":"6C4CAABF-72C1-46F3-A32E-BD51FAFF4C57","isFixed":0},{"rectangle":{"x":322,"y":588,"width":57,"height":38},"target":"8711F76E-75A0-4675-927D-C27DA78C1C92","isFixed":0}],"hasFixedLayers":false},"3FC1AA99-BCB8-43D3-9D99-CC23360FB403":{"title":"Information View with Report","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":171.51999999999998,"y":760,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":760,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":193,"y":441,"width":136,"height":44},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":59,"y":441,"width":135,"height":44},"target":"A9F6FA1B-72F1-4816-9C4F-70DEAFD257F4","isFixed":0}],"hasFixedLayers":false},"DB4AEDA8-40C3-476E-8C8C-AA733229319E":{"title":"Schedule View Saturday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":332.5423076923077,"y":193,"width":51.39230769230767,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":277.1192307692308,"y":193,"width":51.392307692307696,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":225.72692307692307,"y":193,"width":51.392307692307696,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":170.30384615384617,"y":193,"width":51.392307692307725,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.91153846153847,"y":193,"width":51.39230769230768,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":64.49615384615385,"y":193,"width":54.41538461538462,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":10.080769230769228,"y":193,"width":54.415384615384625,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":303.524,"y":760.0000000000001,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":172.524,"y":760.0000000000001,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.476,"y":760.0000000000001,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":22.67692307692309,"y":280,"width":345.63846153846157,"height":72.99999999999997},"target":"6BE3EF54-9B46-4217-8483-B36C3CEDC8A7","isFixed":0},{"rectangle":{"x":320.95384615384614,"y":249,"width":57.438461538461524,"height":30.999999999999993},"target":"6BE3EF54-9B46-4217-8483-B36C3CEDC8A7","isFixed":0}],"hasFixedLayers":false},"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39":{"title":"Schedule View Friday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":332.5423076923077,"y":193,"width":51.39230769230767,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":277.1192307692308,"y":193,"width":51.392307692307696,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":225.72692307692307,"y":193,"width":51.392307692307696,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":170.30384615384617,"y":193,"width":51.392307692307725,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.91153846153847,"y":193,"width":51.39230769230768,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":64.49615384615385,"y":193,"width":54.41538461538462,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":10.080769230769228,"y":193,"width":54.415384615384625,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":303.524,"y":760.0000000000001,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":172.524,"y":760.0000000000001,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.476,"y":760.0000000000001,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":22.67692307692309,"y":280,"width":345.63846153846157,"height":72.99999999999997},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0},{"rectangle":{"x":320.95384615384614,"y":249,"width":57.438461538461524,"height":30.999999999999993},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0}],"hasFixedLayers":false},"AEC1C0C2-AC57-45B0-8A02-9672C588113A":{"title":"Schedule View Thursday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":332.5423076923077,"y":193,"width":51.39230769230767,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":277.1192307692308,"y":193,"width":51.392307692307696,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":225.72692307692307,"y":193,"width":51.392307692307696,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":170.30384615384617,"y":193,"width":51.392307692307725,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.91153846153847,"y":193,"width":51.39230769230768,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":64.49615384615385,"y":193,"width":54.41538461538462,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":10.080769230769228,"y":193,"width":54.415384615384625,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":303.524,"y":760.0000000000001,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":172.524,"y":760.0000000000001,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.476,"y":760.0000000000001,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":22.67692307692309,"y":280,"width":345.63846153846157,"height":72.99999999999997},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0},{"rectangle":{"x":320.95384615384614,"y":249,"width":57.438461538461524,"height":30.999999999999993},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0}],"hasFixedLayers":false},"D76C68EA-7B6B-48D2-87AC-29C22C174805":{"title":"Schedule View Wednesday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":332.5423076923077,"y":193,"width":51.39230769230767,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":277.1192307692308,"y":193,"width":51.392307692307696,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":225.72692307692307,"y":193,"width":51.392307692307696,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":170.30384615384617,"y":193,"width":51.392307692307725,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.91153846153847,"y":193,"width":51.39230769230768,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":64.49615384615385,"y":193,"width":54.41538461538462,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":10.080769230769228,"y":193,"width":54.415384615384625,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":303.524,"y":760.0000000000001,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":172.524,"y":760.0000000000001,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.476,"y":760.0000000000001,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":22.67692307692309,"y":280,"width":345.63846153846157,"height":72.99999999999997},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0},{"rectangle":{"x":320.95384615384614,"y":249,"width":57.438461538461524,"height":30.999999999999993},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0}],"hasFixedLayers":false},"70F7214D-22B0-4C5E-971E-A6530168AA57":{"title":"Schedule View Tuesday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":332.5423076923077,"y":193,"width":51.39230769230767,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":277.1192307692308,"y":193,"width":51.392307692307696,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":225.72692307692307,"y":193,"width":51.392307692307696,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":170.30384615384617,"y":193,"width":51.392307692307725,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.91153846153847,"y":193,"width":51.39230769230768,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":64.49615384615385,"y":193,"width":54.41538461538462,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":10.080769230769228,"y":193,"width":54.415384615384625,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":303.524,"y":760.0000000000001,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":172.524,"y":760.0000000000001,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.476,"y":760.0000000000001,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":22.67692307692309,"y":280,"width":345.63846153846157,"height":72.99999999999997},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0},{"rectangle":{"x":320.95384615384614,"y":249,"width":57.438461538461524,"height":30.999999999999993},"target":"84487699-0A00-4385-AD65-B1FC36B817E3","isFixed":0}],"hasFixedLayers":false},"B1AD636E-9BEC-4D76-8A34-F39B7922D298":{"title":"Schedule View Sunday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":24.5,"y":494,"width":36,"height":44},"target":"5100AC3D-C147-4DA4-9757-AD073266B469","isFixed":0},{"rectangle":{"x":330.5,"y":193,"width":51,"height":50},"target":"DB4AEDA8-40C3-476E-8C8C-AA733229319E","isFixed":0},{"rectangle":{"x":275.5,"y":193,"width":51,"height":50},"target":"F432AC9F-9E35-4A26-A3BF-6CBB7E459B39","isFixed":0},{"rectangle":{"x":224.5,"y":193,"width":51,"height":50},"target":"AEC1C0C2-AC57-45B0-8A02-9672C588113A","isFixed":0},{"rectangle":{"x":169.5,"y":193,"width":51,"height":50},"target":"D76C68EA-7B6B-48D2-87AC-29C22C174805","isFixed":0},{"rectangle":{"x":118.5,"y":193,"width":51,"height":50},"target":"70F7214D-22B0-4C5E-971E-A6530168AA57","isFixed":0},{"rectangle":{"x":64.5,"y":193,"width":54,"height":50},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":10.5,"y":193,"width":54,"height":50},"target":"B1AD636E-9BEC-4D76-8A34-F39B7922D298","isFixed":0},{"rectangle":{"x":301.52,"y":760,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":760,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":760,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":23,"y":280,"width":343,"height":73},"target":"5100AC3D-C147-4DA4-9757-AD073266B469","isFixed":0},{"rectangle":{"x":319,"y":249,"width":57,"height":31},"target":"5100AC3D-C147-4DA4-9757-AD073266B469","isFixed":0}],"hasFixedLayers":false},"84487699-0A00-4385-AD65-B1FC36B817E3":{"title":"Service Modal Stack","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0,"y":55,"width":390,"height":55},"target":"back","isFixed":0},{"rectangle":{"x":24.5,"y":707,"width":343,"height":50},"target":"back","isFixed":0}],"hasFixedLayers":false},"B9EAAA9C-5470-4ED0-9BAD-3E3A071EAF69":{"title":"Confirm Return Home","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.50000293000005,"y":539.7967,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":60,"y":463,"width":270,"height":45},"target":"3359F4C6-994C-4108-AFFA-9BDE81AC6E81","isFixed":0}],"hasFixedLayers":false},"2CD82BB2-3F0F-4DE7-A93D-4F0A6013C1D0":{"title":"Emergency Return Home","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.50000293000005,"y":539.7967,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":60,"y":477,"width":135,"height":45},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":237,"y":322,"width":78,"height":43},"target":"069E23E8-59CE-4E22-85EC-ABC88AF58B9C","isFixed":0},{"rectangle":{"x":195,"y":477,"width":135,"height":45},"target":"41F6B550-8BCD-43FF-BC9D-736EFC691F50","isFixed":0}],"hasFixedLayers":false},"EE1B348B-B091-4B2E-A2C4-3A15A9E2928B":{"title":"Settings Take Car Confirmed","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":0.046875,"y":289.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":334.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":379.60004,"width":390,"height":45},"target":"78EC4C62-382A-4C98-9557-DCCF0810675B","isFixed":0},{"rectangle":{"x":0.046875,"y":424.60004,"width":390,"height":45},"target":"FB4924D5-A3EA-44DD-BFC2-5E717C1A5391","isFixed":0},{"rectangle":{"x":322,"y":543,"width":57,"height":38},"target":"6C4CAABF-72C1-46F3-A32E-BD51FAFF4C57","isFixed":0},{"rectangle":{"x":322,"y":588,"width":57,"height":38},"target":"8711F76E-75A0-4675-927D-C27DA78C1C92","isFixed":0}],"hasFixedLayers":false},"FCDFEE1F-E979-4F9F-8A97-14852C0E8BB0":{"title":"Settings","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":759.99994,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":0.046875,"y":289.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":334.60004,"width":390,"height":45},"target":"23112DC1-1746-44B1-B051-A75BC118B857","isFixed":0},{"rectangle":{"x":0.046875,"y":379.60004,"width":390,"height":45},"target":"78EC4C62-382A-4C98-9557-DCCF0810675B","isFixed":0},{"rectangle":{"x":0.046875,"y":424.60004,"width":390,"height":45},"target":"FB4924D5-A3EA-44DD-BFC2-5E717C1A5391","isFixed":0},{"rectangle":{"x":322,"y":543,"width":57,"height":38},"target":"6C4CAABF-72C1-46F3-A32E-BD51FAFF4C57","isFixed":0},{"rectangle":{"x":322,"y":588,"width":57,"height":38},"target":"8711F76E-75A0-4675-927D-C27DA78C1C92","isFixed":0}],"hasFixedLayers":false},"A9F6FA1B-72F1-4816-9C4F-70DEAFD257F4":{"title":"Report Page","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":760,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":760,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":760,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":28,"y":201,"width":333,"height":42},"target":"4ABDDDFD-FF8E-4C4C-A680-73EDA5744032","isFixed":0}],"hasFixedLayers":false},"6BE3EF54-9B46-4217-8483-B36C3CEDC8A7":{"title":"Service Modal Stack Saturday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0.5,"y":55,"width":390,"height":55},"target":"back","isFixed":0},{"rectangle":{"x":25,"y":707,"width":343,"height":50},"target":"back","isFixed":0}],"hasFixedLayers":false},"5100AC3D-C147-4DA4-9757-AD073266B469":{"title":"Service Modal Stack Sunday","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0.5,"y":55,"width":390,"height":55},"target":"back","isFixed":0},{"rectangle":{"x":25,"y":707,"width":343,"height":50},"target":"back","isFixed":0}],"hasFixedLayers":false},"3359F4C6-994C-4108-AFFA-9BDE81AC6E81":{"title":"In Service, Car Returning","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.50000293000005,"y":539.80006,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":301.52,"y":759.99994,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":759.99994,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0}],"hasFixedLayers":false},"069E23E8-59CE-4E22-85EC-ABC88AF58B9C":{"title":"Confirm Car Now","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.50000292999994,"y":539.7967,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":60,"y":453,"width":270,"height":47},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0}],"hasFixedLayers":false},"41F6B550-8BCD-43FF-BC9D-736EFC691F50":{"title":"Confirm Emergency Car","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":334.50000292999994,"y":539.7967,"width":41,"height":41},"target":"1E913AF6-CE9C-4ABB-9813-0CC2C8215A38","isFixed":0},{"rectangle":{"x":60,"y":476,"width":270,"height":40},"target":"3359F4C6-994C-4108-AFFA-9BDE81AC6E81","isFixed":0}],"hasFixedLayers":false},"4ABDDDFD-FF8E-4C4C-A680-73EDA5744032":{"title":"Report Page Menu Open","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":301.52,"y":760,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":760,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":760,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0},{"rectangle":{"x":29,"y":243,"width":331,"height":46},"target":"BE3AB999-F833-4A6E-85F8-51A0D700FA4A","isFixed":0},{"rectangle":{"x":27,"y":496,"width":334,"height":168},"target":"48E6E1DF-6AC7-457F-BED6-B7B0C0194172","isFixed":0}],"hasFixedLayers":false},"BE3AB999-F833-4A6E-85F8-51A0D700FA4A":{"title":"Reconnect","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0,"y":0,"width":390,"height":844},"target":"5A761C03-00B4-478D-BE79-29F7158B350A","isFixed":0}],"hasFixedLayers":false},"48E6E1DF-6AC7-457F-BED6-B7B0C0194172":{"title":"Report Page Filled Response","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":29,"y":689,"width":332,"height":44},"target":"59AAD93A-1BE9-47EC-9E49-39C98BA9133B","isFixed":0},{"rectangle":{"x":301.52,"y":760,"width":48,"height":49},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0},{"rectangle":{"x":171.51999999999998,"y":760,"width":48,"height":49},"target":"C1285D6D-7452-4D05-AA0B-A0513BDA93C0","isFixed":0},{"rectangle":{"x":40.48,"y":760,"width":48,"height":49},"target":"3F79102E-6A62-4735-B11D-6A02D691B05B","isFixed":0}],"hasFixedLayers":false},"5A761C03-00B4-478D-BE79-29F7158B350A":{"title":"Reconnect Complete","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":0,"y":0,"width":390,"height":844},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0}],"hasFixedLayers":false},"59AAD93A-1BE9-47EC-9E49-39C98BA9133B":{"title":"Report Page Submitted","width":390,"height":844,"viewportWidth":390,"viewportHeight":844,"hotspots":[{"rectangle":{"x":57.5,"y":472,"width":271,"height":44},"target":"774536F7-DAA5-4C2C-8731-4C389EE14B0A","isFixed":0}],"hasFixedLayers":false}}}
+    );
+  </script>
+
+</body>
+</html>
